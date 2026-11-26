@@ -51,22 +51,29 @@ enum CLI {
 
     static func send(_ args: [String]) async throws -> Int32 {
         var opts = Options(args)
-        let outbox = Outbox()
-        if !opts.flag("--force"), let url = opts.target,
-            let dup = outbox.items().first(where: { $0.source == url })
-        {
-            printError("Already in the outbox (\(dup.state.rawValue)): \(dup.title). Use --force to add it again.")
+        let force = opts.flag("--force")
+        let includeImages = !opts.flag("--no-images")
+        let result: ArticleSender.Result
+        do {
+            if let htmlPath = opts.value("--html") {
+                guard let base = opts.value("--url").flatMap(URL.init(string:)) else {
+                    throw CLIError("--html needs --url <original page url>")
+                }
+                let html = try String(contentsOf: URL(filePath: htmlPath), encoding: .utf8)
+                result = try await ArticleSender.send(
+                    html: html, baseURL: base, includeImages: includeImages, allowDuplicate: force)
+            } else {
+                result = try await ArticleSender.send(
+                    url: try webURL(opts.target), includeImages: includeImages, allowDuplicate: force)
+            }
+        } catch let error as ArticleSender.SendError {
+            printError("\(error.localizedDescription) Use --force to add it again.")
             return 1
         }
-        let article = try await convert(&opts)
-        let epub = EPUBBuilder.build(article.document)
-        let item = OutboxItem(
-            id: article.document.identifier, title: article.title, author: article.author, site: article.site,
-            source: article.source?.absoluteString, epubBytes: epub.count)
-        try outbox.add(epub: epub, item: item)
+        let article = result.article
         print("Queued: \(article.title)")
         print("  \(article.author)\(article.site.isEmpty || article.site == article.author ? "" : " · \(article.site)")")
-        print("  \(formatBytes(epub.count)), \(imageSummary(article))")
+        print("  \(formatBytes(result.item.epubBytes)), \(imageSummary(article))")
         if PiccoDevice.findMounted() != nil { print("A Picco is mounted — run `picco sync` to deliver it.") }
         return 0
     }
@@ -77,7 +84,8 @@ enum CLI {
             printError("epub needs -o <file.epub>")
             return 64
         }
-        let article = try await convert(&opts)
+        let includeImages = !opts.flag("--no-images")
+        let article = try await ArticleSender.convert(url: try webURL(opts.target), includeImages: includeImages)
         let data = EPUBBuilder.build(article.document)
         try data.write(to: URL(filePath: out))
         print("Wrote \(out): \(article.title) (\(formatBytes(data.count)), \(imageSummary(article)))")
@@ -85,7 +93,7 @@ enum CLI {
     }
 
     static func list() -> Int32 {
-        let items = Outbox().items()
+        let items = Outbox().items().filter { $0.state != .removed }
         if items.isEmpty { print("The outbox is empty."); return 0 }
         let queued = items.filter { $0.state == .queued }
         let delivered = items.filter { $0.state == .delivered }
@@ -126,6 +134,10 @@ enum CLI {
                 print("  ~ \(i.title): \(p.finished ? "finished" : "\(Int(p.percent.rounded()))%")")
             }
         }
+        if !report.removedOnDevice.isEmpty {
+            print("Deleted on the Picco since last sync: \(report.removedOnDevice.count)")
+            for i in report.removedOnDevice { print("  - \(i.title)") }
+        }
         for f in report.failures { printError("  ! \(f.title): \(f.reason)") }
         if !opts.flag("--no-eject"), opts.value("--device") == nil {
             try await device.eject()
@@ -146,22 +158,11 @@ enum CLI {
 
     // MARK: - Helpers
 
-    static func convert(_ opts: inout Options) async throws -> ArticleAssembler.Article {
-        let includeImages = !opts.flag("--no-images")
-        let extractor = WebExtractor()
-        let page: ExtractedPage
-        if let htmlPath = opts.value("--html") {
-            guard let base = opts.value("--url").flatMap(URL.init(string:)) else {
-                throw CLIError("--html needs --url <original page url>")
-            }
-            let html = try String(contentsOf: URL(filePath: htmlPath), encoding: .utf8)
-            page = try await extractor.extract(html: html, baseURL: base, includeImages: includeImages)
-        } else if let target = opts.target, let url = URL(string: target), url.scheme?.hasPrefix("http") == true {
-            page = try await extractor.extract(url: url, includeImages: includeImages)
-        } else {
+    static func webURL(_ target: String?) throws -> URL {
+        guard let target, let url = URL(string: target), url.scheme?.hasPrefix("http") == true else {
             throw CLIError("Give a web address starting with http:// or https://")
         }
-        return try await ArticleAssembler.assemble(page)
+        return url
     }
 
     static func imageSummary(_ a: ArticleAssembler.Article) -> String {

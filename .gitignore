@@ -4,3 +4,6 @@
 DerivedData/
 .DS_Store
 *.epub
+
+# Per-developer signing overrides
+App/Config/Local.xcconfig

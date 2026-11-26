@@ -139,6 +139,31 @@ func makePNG(width: Int, height: Int) -> Data {
     }
 }
 
+@Suite struct CoverTests {
+    @Test func coverIsGreyscaleTwoByThree() throws {
+        let photo = try #require(CoverRenderer.decode(makePNG(width: 1200, height: 630)))
+        for image in [photo, nil] as [CGImage?] {
+            let jpeg = try #require(CoverRenderer.jpeg(title: "A headline long enough to wrap onto several lines of the cover", site: "Example", image: image))
+            let cover = try #require(CGImageSourceCreateImageAtIndex(CGImageSourceCreateWithData(jpeg as CFData, nil)!, 0, nil))
+            #expect(cover.width == 480 && cover.height == 720)
+            #expect(cover.colorSpace?.model == .monochrome)
+        }
+    }
+
+    @Test func tinyImagesAreNotUsedForCovers() {
+        #expect(CoverRenderer.decode(makePNG(width: 120, height: 120)) == nil)
+    }
+
+    @Test func epubDeclaresTheCover() throws {
+        var doc = sampleDocument()
+        doc.cover = .init(href: "cover.jpg", data: try #require(CoverRenderer.jpeg(title: "T", site: "S", image: nil)))
+        let opf = EPUBBuilder.packageOPF(doc)
+        #expect(opf.contains("<meta name=\"cover\" content=\"cover-image\"/>"))
+        #expect(opf.contains("href=\"cover.jpg\" media-type=\"image/jpeg\" properties=\"cover-image\""))
+        #expect(!opf.contains("idref=\"cover-image\""), "the cover isn't a page in the reading order")
+    }
+}
+
 // MARK: - File names
 
 @Suite struct FileNamerTests {
@@ -185,6 +210,17 @@ func makePNG(width: Int, height: Int) -> Data {
         #expect(path2 == "embedded://The Odyssey.opub")
         #expect(!p2.finished)
         #expect(p2.percent == 5.6)
+    }
+
+    @Test func progressLookupToleratesNormalisationCaseAndFolder() {
+        let p = ReadingProgress(percent: 30, finished: false, lastOpened: nil)
+        // "é" decomposed (e + combining accent), different case, as the device might report it.
+        let index = ProgressIndex(["/BOOKS/Articles/Cafe\u{0301} Story.epub": p])
+        #expect(index.lookup("/books/Articles/Café Story.epub") == p)
+        #expect(ProgressIndex(["embedded://Café Story.epub": p]).lookup("/books/Articles/Café Story.epub") == p)
+        // Ambiguous file names don't match by name alone.
+        let two = ProgressIndex(["/a/X.epub": p, "/b/X.epub": p])
+        #expect(two.lookup("/books/Articles/X.epub") == nil)
     }
 
     @Test func garbageStateIsIgnored() {
@@ -249,6 +285,14 @@ func makePNG(width: Int, height: Int) -> Data {
 
         // Unchanged progress isn't reported again.
         #expect(Syncer.sync(outbox: outbox, device: device).progressUpdated.isEmpty)
+
+        // Deleted on the Picco: the next sync marks it removed and doesn't re-deliver it.
+        try FileManager.default.removeItem(at: device.articlesFolder.appending(path: "Big Story — Example (2).epub"))
+        let third = Syncer.sync(outbox: outbox, device: device)
+        #expect(third.removedOnDevice.count == 1)
+        #expect(third.delivered.isEmpty)
+        #expect(outbox.items().first?.state == .removed)
+        #expect(!FileManager.default.fileExists(atPath: device.articlesFolder.appending(path: "Big Story — Example (2).epub").path))
     }
 }
 
@@ -275,6 +319,39 @@ func makePNG(width: Int, height: Int) -> Data {
         // The whole chapter must still be well-formed XML.
         let chapter = EPUBBuilder.chapterXHTML(article.document.chapters[0], lang: "en")
         #expect(throws: Never.self) { _ = try XMLDocument(xmlString: chapter) }
+    }
+
+    @Test func longArticlesAreSplitAtHeadingsWhereverTheySit() async throws {
+        let filler = String(repeating: "<p>\(String(repeating: "Words fill the page. ", count: 40))</p>", count: 25)
+        let html = """
+            <div><p id="intro">Intro <a href="#fn1">[1]</a></p>\(filler)
+            <div><h2>First</h2>\(filler)</div>
+            <h2>Second</h2>\(filler)
+            <div><div><h2>Notes</h2><p id="fn1">Footnote. <a href="#intro">back</a></p></div></div></div>
+            """
+        let article = try await ArticleAssembler.assemble(page(html: html))
+        let chapters = article.document.chapters
+        #expect(chapters.map(\.title) == ["Big Story", "First", "Second", "Notes"])
+        #expect(chapters[0].bodyXHTML.contains("picco-head"), "the title block opens the first chapter")
+        #expect(!chapters[1].bodyXHTML.contains("picco-head"))
+        #expect(chapters[3].bodyXHTML.contains("picco-source"), "the source line closes the last chapter")
+        // Links between chapters point at the right file.
+        #expect(chapters[0].bodyXHTML.contains("href=\"c4.xhtml#fn1\""))
+        #expect(chapters[3].bodyXHTML.contains("href=\"c1.xhtml#intro\""))
+        // Every chapter is still well-formed, and no text was lost or duplicated.
+        var allText = ""
+        for c in chapters {
+            let doc = try XMLDocument(xmlString: EPUBBuilder.chapterXHTML(c, lang: "en"))
+            allText += doc.rootElement()?.stringValue ?? ""
+        }
+        #expect(allText.components(separatedBy: "Footnote.").count == 2)
+        #expect(allText.components(separatedBy: "Words fill the page.").count - 1 == 25 * 40 * 3)
+    }
+
+    @Test func shortArticlesStayInOneChapter() async throws {
+        let article = try await ArticleAssembler.assemble(page(html: "<h2>A</h2><p>One.</p><h2>B</h2><p>Two.</p>"))
+        #expect(article.document.chapters.count == 1)
+        #expect(article.document.chapters[0].sections.map(\.title) == ["A", "B"])
     }
 
     @Test func imagesThatFailToDownloadAreRemoved() async throws {

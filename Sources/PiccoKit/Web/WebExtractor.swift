@@ -13,6 +13,8 @@ public struct ExtractedPage: Decodable, Sendable {
     public var description: String
     public var wordCount: Int
     public var imageCount: Int
+    /// The page's main image URL (og:image or similar), if any. Used for the cover.
+    public var image: String? = nil
     /// A `<div xmlns="http://www.w3.org/1999/xhtml">` holding the cleaned article.
     /// Images carry `data-picco-src` with the URL to download.
     public var html: String

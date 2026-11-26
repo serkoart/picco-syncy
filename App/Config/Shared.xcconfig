@@ -1,0 +1,11 @@
+// Signing for Picco Syncy.
+//
+// Contributors: don't edit this file. Create App/Config/Local.xcconfig (git-ignored) with your own
+//   DEVELOPMENT_TEAM = <your team ID>
+//   PRODUCT_BUNDLE_IDENTIFIER = <your.reverse.domain>.PiccoSyncy
+// or set DEVELOPMENT_TEAM to empty there to sign to run locally.
+
+DEVELOPMENT_TEAM = 33JXZ6WRS4
+PRODUCT_BUNDLE_IDENTIFIER = com.serkoart.PiccoSyncy
+
+#include? "Local.xcconfig"

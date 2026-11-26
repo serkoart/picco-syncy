@@ -37,16 +37,19 @@ public struct EPUBDocument: Sendable {
     public var date: String?
     public var chapters: [Chapter]
     public var images: [Image]
+    /// Shown as the book's thumbnail in the library. Not added to the reading order.
+    public var cover: Image?
     public var modified: Date
 
     public init(
         identifier: UUID = UUID(), title: String, author: String, publisher: String? = nil,
         language: String = "en", source: URL? = nil, date: String? = nil,
-        chapters: [Chapter], images: [Image] = [], modified: Date = Date()
+        chapters: [Chapter], images: [Image] = [], cover: Image? = nil, modified: Date = Date()
     ) {
         self.identifier = identifier; self.title = title; self.author = author
         self.publisher = publisher; self.language = language; self.source = source
-        self.date = date; self.chapters = chapters; self.images = images; self.modified = modified
+        self.date = date; self.chapters = chapters; self.images = images; self.cover = cover
+        self.modified = modified
     }
 }
 
@@ -57,6 +60,11 @@ public enum EPUBBuilder {
         zip.add("mimetype", Data("application/epub+zip".utf8), compress: false)
         zip.add("META-INF/container.xml", Data(containerXML.utf8))
         zip.add("OEBPS/content.opf", Data(packageOPF(doc).utf8))
+        // Cover first, ahead of chapters and images. (The Picco builds library thumbnails in the
+        // background whatever the order; see SPEC.md, "Covers".)
+        if let cover = doc.cover {
+            zip.add("OEBPS/\(cover.href)", cover.data, compress: false)
+        }
         zip.add("OEBPS/nav.xhtml", Data(navXHTML(doc).utf8))
         zip.add("OEBPS/toc.ncx", Data(tocNCX(doc).utf8))
         zip.add("OEBPS/style.css", Data(stylesheet.utf8))
@@ -101,6 +109,8 @@ public enum EPUBBuilder {
         if let date = doc.date { meta += "\n    <dc:date>\(xml(date))</dc:date>" }
         let modified = ISO8601DateFormatter().string(from: doc.modified)
         meta += "\n    <meta property=\"dcterms:modified\">\(modified)</meta>"
+        // EPUB 2 readers find the cover through this; EPUB 3 readers through the manifest property.
+        if doc.cover != nil { meta += "\n    <meta name=\"cover\" content=\"cover-image\"/>" }
 
         var manifest = """
                 <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
@@ -114,6 +124,9 @@ public enum EPUBBuilder {
         }
         for (i, image) in doc.images.enumerated() {
             manifest += "\n    <item id=\"img\(i + 1)\" href=\"\(xml(image.href))\" media-type=\"\(image.mediaType)\"/>"
+        }
+        if let cover = doc.cover {
+            manifest += "\n    <item id=\"cover-image\" href=\"\(xml(cover.href))\" media-type=\"\(cover.mediaType)\" properties=\"cover-image\"/>"
         }
 
         return """

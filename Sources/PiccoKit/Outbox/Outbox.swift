@@ -1,7 +1,8 @@
 import Foundation
 
 public struct OutboxItem: Codable, Sendable, Identifiable, Equatable {
-    public enum State: String, Codable, Sendable { case queued, delivered }
+    /// `removed`: delivered earlier, but no longer on the Picco (deleted on the device).
+    public enum State: String, Codable, Sendable { case queued, delivered, removed }
 
     public var id: UUID
     public var title: String

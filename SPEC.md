@@ -46,6 +46,8 @@ All of the following was tested on a real Picco on 2026-11-25, not taken from do
 | Files sent by BOOX Tiles | Arrive as `.opub`, a proprietary binary format with a FlatBuffers-like layout, magic `BFPE`, and uncompressed text inside. Wallpapers are `.opg` (magic `BLAG`). The conversion runs in the browser on booxtiles.com (or in the Tiles app), not on the device. |
 | Reading progress | `.onyx/<account-id>/local/books/<uuid>/state.json` is plain JSON: `path`, `title`, `author`, `progressPercent`, `finished`, `lastOpenedAt` (Unix seconds). For our files, `path` is `/books/Articles/<file>.epub`. |
 | macOS side effects | Finder and Spotlight write `.Spotlight-V100`, `.fseventsd`, `.Trashes`, and `._*` AppleDouble files to the volume. Every file our process creates gets a `com.apple.provenance` tag, which can't be removed and is stored as a `._<name>` file. `FileManager` hides `._` files on FAT volumes; `unlink` on them works and drops the tag. |
+| Covers | The standard EPUB cover (manifest `properties="cover-image"` plus EPUB 2 `<meta name="cover">`) works. The Picco builds thumbnails (`lite_cover_thumb-128x192.bin`, `-252x380.bin` in `.onyx/covers/<hash>/`) in the background and doesn't refresh the screen: after a sync, the **second** visit to Books from the Home screen shows them, whatever the book's size or where the cover sits in the archive. Opening the book also builds them. Cover pages, `guide` entries and sidecar `.jpg` files made no difference (tested 2026-11-26). |
+| Links inside books | The Picco's reader doesn't follow links. Tapping a footnote number opens the chapter list instead (tested 2026-11-26). Links are kept anyway: the notes stay readable at the end, and firmware may add support. |
 | Ejecting | `NSWorkspace.unmountAndEjectDevice` failed with -47 (busy) with nothing open; `diskutil eject` succeeded immediately. |
 
 There is no public API for any of this. The `.onyx/` layout is undocumented and may change with firmware updates. The app should read it defensively and never write to it.
@@ -112,7 +114,7 @@ Every source becomes clean, minimal XHTML first, and then an EPUB.
 - `mimetype` stored first and uncompressed. Everything else deflated.
 - Metadata: `dc:title` = article title, `dc:creator` = byline, or the site name if there's no byline, `dc:source` = URL, `dc:date` = published date, `dc:identifier` = the job's UUID.
 - One minimal stylesheet: serif body text, modest margins, no fixed font sizes (the reader controls those), images `max-width: 100%`.
-- One chapter for articles. Long documents are split at top-level headings so the Picco's table of contents is useful.
+- Articles over ~50 KB with at least two section headings are split into one chapter per section (text unchanged; links between sections re-pointed). The Picco prepares books chapter by chapter, so the first open of a long article is much faster. Each section then starts on a new page. Shorter articles stay one chapter, with headings in the table of contents. History: tried, dropped over odd characters that turned out to be the Picco's font (Greek and phonetic letters in Wikipedia), then restored and confirmed on the device on 2026-11-26 (Central Park, 12 sections).
 - Target size: under ~1 MB for a typical article with images.
 
 ### 4. Outbox
@@ -171,7 +173,7 @@ Neither is planned.
 ## Milestones
 
 1. **M1 – PiccoKit core + CLI:** EPUB builder, sanitizer, web extraction, `picco send <url>` into a local outbox, `picco sync` to a mounted Picco. *Done when* an article sent from the CLI reads well on the device. **Status: done (2026-11-25).** Confirmed on the real Picco: Wikipedia (with images and a table of contents) and a Paul Graham essay both read well. The outbox is in `~/Library/Application Support/PiccoSync` until M3 moves it to the App Group. The `diskutil` eject fallback hasn't yet run on the device.
-2. **M2 – Menu-bar app:** outbox UI, mount detection, auto-sync, progress readback, eject.
+2. **M2 – Menu-bar app:** outbox UI, mount detection, auto-sync, progress readback, eject. **Status:** built and signed on 2026-11-25 (Xcode project in `App/`, SwiftUI `MenuBarExtra`). It also takes a pasted link, which the spec didn't plan for, so the app is useful before the Share extension exists. Confirmed with the real Picco on 2026-11-26: auto-sync, eject only after delivering, progress readback, deletions noticed. Articles also get a generated greyscale cover (article photo + headline, or typographic).
 3. **M3 – Share extension:** Safari capture via JS preprocessing, URLs, Finder files, images toggle.
 4. **M4 – Documents:** Word/RTF/Markdown, then PDF text extraction, OCR, and preview.
 5. **M5 – Polish:** settings, launch at login, error reporting, the "Remove finished" action.
@@ -185,4 +187,4 @@ Neither is planned.
 
 ## Test files
 
-The test files from 2026-11-25 were deleted from the device after M1.
+The test files from 2026-11-25 were deleted from the device after M1. The cover tests from 2026-11-26 (`Cover Test A–D`) were deleted on the device by hand.

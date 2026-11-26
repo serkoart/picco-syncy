@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Turns an extracted page into an EPUB document: adds the title block, builds the table of contents
@@ -62,29 +63,42 @@ public enum ArticleAssembler {
         }
         removeEmptyFigures(in: root)
 
-        root.removeAttribute(forName: "xmlns")
-        root.addAttribute(XMLNode.attribute(withName: "class", stringValue: "picco-article") as! XMLNode)
-        let articleMarkup = root.xmlString(options: [.nodeCompactEmptyElement])
-            .replacingOccurrences(of: " xmlns=\"http://www.w3.org/1999/xhtml\"", with: "")
-
         var metaParts: [String] = []
         if !page.author.isEmpty { metaParts.append(page.author) }
         if !site.isEmpty, site != page.author { metaParts.append(site) }
         if let shown = displayDate(page.published) { metaParts.append(shown) }
 
-        var body = "<div class=\"picco-head\">\n<h1>\(xml(title))</h1>\n"
-        if !metaParts.isEmpty { body += "<p class=\"picco-meta\">\(xml(metaParts.joined(separator: " · ")))</p>\n" }
-        body += "</div>\n\(articleMarkup)\n"
+        var head = "<div class=\"picco-head\">\n<h1>\(xml(title))</h1>\n"
+        if !metaParts.isEmpty { head += "<p class=\"picco-meta\">\(xml(metaParts.joined(separator: " · ")))</p>\n" }
+        head += "</div>\n"
+        var footer = ""
         if let source {
-            body += "<p class=\"picco-source\">Source: <a href=\"\(xml(source.absoluteString))\">\(xml(source.host() ?? source.absoluteString))</a></p>"
+            footer = "<p class=\"picco-source\">Source: <a href=\"\(xml(source.absoluteString))\">\(xml(source.host() ?? source.absoluteString))</a></p>"
         }
+
+        // Long articles become one chapter per section, so the Picco can show the first page without
+        // first processing the whole article (it caches books chapter by chapter). The text is unchanged.
+        let parts = splitIntoChapters(root)
+        let multiple = parts.count > 1
+        if multiple { relinkAcrossChapters(parts) }
+        var chapters: [EPUBDocument.Chapter] = []
+        for (i, part) in parts.enumerated() {
+            var body = (i == 0 ? head : "") + serialize(part) + "\n"
+            if i == parts.count - 1 { body += footer }
+            let chapterTitle = i == 0 ? title : (firstHeadingText(in: part) ?? "Part \(i + 1)")
+            chapters.append(.init(title: chapterTitle, bodyXHTML: body, sections: multiple ? [] : sections))
+        }
+
+        let cover = await makeCover(
+            title: title, site: site.isEmpty ? author : site, pageImage: page.image.flatMap(URL.init(string:)),
+            firstArticleImage: images.first?.data, referer: source, session: session)
 
         let language = page.language.isEmpty ? "en" : String(page.language.prefix(35))
         let document = EPUBDocument(
             title: title, author: author, publisher: site.isEmpty ? nil : site, language: language,
             source: source, date: isoDate(page.published),
-            chapters: [.init(title: title, bodyXHTML: body, sections: sections)],
-            images: images)
+            chapters: chapters,
+            images: images, cover: cover.map { .init(href: "cover.jpg", data: $0) })
         return Article(
             document: document, title: title, author: author, site: site, source: source,
             imagesKept: images.count, imagesDropped: dropped)
@@ -155,6 +169,99 @@ public enum ArticleAssembler {
         }
     }
 
+    // MARK: - Chapters
+
+    /// Split only articles bigger than this (bytes of XHTML), and only at two or more section headings.
+    static let splitThreshold = 50_000
+
+    static func serialize(_ part: XMLElement) -> String {
+        part.removeAttribute(forName: "xmlns")
+        part.removeAttribute(forName: "class")
+        part.addAttribute(XMLNode.attribute(withName: "class", stringValue: "picco-article") as! XMLNode)
+        return part.xmlString(options: [.nodeCompactEmptyElement])
+            .replacingOccurrences(of: " xmlns=\"http://www.w3.org/1999/xhtml\"", with: "")
+    }
+
+    /// Splits the article at each `<h2>`, wherever it sits in the tree. Wrapper elements around a heading
+    /// are copied, so each chapter keeps the same structure. Returns the parts in reading order; the first
+    /// is whatever comes before the first heading (dropped if empty).
+    static func splitIntoChapters(_ root: XMLElement) -> [XMLElement] {
+        let headings = elements(named: "h2", in: root)
+        guard headings.count >= 2,
+            root.xmlString(options: [.nodeCompactEmptyElement]).utf8.count > splitThreshold
+        else { return [root] }
+
+        var tails: [XMLElement] = []
+        for heading in headings.reversed() {
+            tails.append(splitOff(from: heading))
+        }
+        var parts = [root] + tails.reversed()
+        if !hasContent(parts[0]) { parts.removeFirst() }
+        return parts
+    }
+
+    /// Moves `node` and everything after it (in document order) out of the article into a new tree.
+    static func splitOff(from node: XMLElement) -> XMLElement {
+        var level = node.parent as? XMLElement  // read before detaching, which clears it
+        var carried: [XMLNode] = detachFollowing(including: node)
+        while let ancestor = level {
+            let shell = XMLElement(name: ancestor.name ?? "div")
+            for attr in ancestor.attributes ?? [] where attr.name != "id" && attr.name != "xmlns" {
+                shell.addAttribute(attr.copy() as! XMLNode)
+            }
+            for child in carried { shell.addChild(child) }
+            // The article root is the top element: its parent is the document, not an element.
+            guard let next = ancestor.parent as? XMLElement else { return shell }
+            carried = [shell] + detachFollowing(including: nil, after: ancestor)
+            level = next
+        }
+        return XMLElement(name: "div")
+    }
+
+    /// Detaches `node` (if given) and all siblings after it — or, with `after`, the siblings after that node.
+    static func detachFollowing(including node: XMLNode?, after anchor: XMLNode? = nil) -> [XMLNode] {
+        guard let start = node ?? anchor, let parent = start.parent, let siblings = parent.children else { return [] }
+        let from = start.index + (node == nil ? 1 : 0)
+        guard from < siblings.count else { return [] }
+        let moving = Array(siblings[from...])
+        for n in moving { n.detach() }
+        return moving
+    }
+
+    static func hasContent(_ el: XMLElement) -> Bool {
+        let text = (el.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return !text.isEmpty || !elements(named: "img", in: el).isEmpty
+    }
+
+    static func firstHeadingText(in el: XMLElement) -> String? {
+        guard let h = elements(named: "h2", in: el).first,
+            let text = h.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
+        else { return nil }
+        return String(text.prefix(120))
+    }
+
+    /// Rewrites `href="#id"` links whose target landed in another chapter to `cN.xhtml#id`.
+    static func relinkAcrossChapters(_ parts: [XMLElement]) {
+        var home: [String: Int] = [:]
+        for (i, part) in parts.enumerated() {
+            func collect(_ el: XMLElement) {
+                if let id = el.attribute(forName: "id")?.stringValue { home[id] = i }
+                for c in el.children ?? [] { if let e = c as? XMLElement { collect(e) } }
+            }
+            collect(part)
+        }
+        for (i, part) in parts.enumerated() {
+            for a in elements(named: "a", in: part) {
+                guard let href = a.attribute(forName: "href")?.stringValue, href.hasPrefix("#") else { continue }
+                let id = String(href.dropFirst())
+                guard let target = home[id], target != i else { continue }
+                a.removeAttribute(forName: "href")
+                a.addAttribute(XMLNode.attribute(
+                    withName: "href", stringValue: EPUBBuilder.chapterFile(target) + "#" + id) as! XMLNode)
+            }
+        }
+    }
+
     // MARK: - Dates
 
     static func isoDate(_ raw: String) -> String? {
@@ -171,6 +278,30 @@ public enum ArticleAssembler {
         return date.formatted(date: .abbreviated, time: .omitted)
     }
 
+    // MARK: - Cover
+
+    /// The page's main image if it downloads and is big enough, else the article's first image,
+    /// else a typographic cover with no photo.
+    static func makeCover(
+        title: String, site: String, pageImage: URL?, firstArticleImage: Data?, referer: URL?, session: URLSession
+    ) async -> Data? {
+        var photo: CGImage?
+        if let pageImage, let data = await download(pageImage, referer: referer, session: session) {
+            photo = CoverRenderer.decode(data)
+        }
+        if photo == nil, let firstArticleImage { photo = CoverRenderer.decode(firstArticleImage) }
+        return CoverRenderer.jpeg(title: title, site: site, image: photo)
+    }
+
+    static func download(_ url: URL, referer: URL?, session: URLSession) async -> Data? {
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        request.setValue(WebExtractor.userAgent, forHTTPHeaderField: "User-Agent")
+        if let referer { request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer") }
+        guard let (data, response) = try? await session.data(for: request) else { return nil }
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return nil }
+        return data
+    }
+
     // MARK: - Images
 
     static func downloadAndConvert(_ urls: [URL], referer: URL?, session: URLSession) async -> [URL: Data] {
@@ -184,11 +315,7 @@ public enum ArticleAssembler {
                 let url = unique[next]
                 next += 1
                 group.addTask {
-                    var request = URLRequest(url: url, timeoutInterval: 20)
-                    request.setValue(WebExtractor.userAgent, forHTTPHeaderField: "User-Agent")
-                    if let referer { request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer") }
-                    guard let (data, response) = try? await session.data(for: request) else { return (url, nil) }
-                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return (url, nil) }
+                    guard let data = await download(url, referer: referer, session: session) else { return (url, nil) }
                     return (url, ImageProcessor.greyscaleJPEG(from: data))
                 }
             }

@@ -235,6 +235,12 @@
       language: (result.language || document.documentElement.lang || "").trim(),
       description: (result.description || "").trim(),
       wordCount: result.wordCount || 0,
+      // The page's main image (og:image etc.), used for the EPUB cover.
+      image: (function () {
+        const raw = (result.image || "").trim();
+        const abs = raw ? absolute(raw) : null;
+        return abs && /^https?:/i.test(abs) && !/\.svg(\?|#|$)/i.test(abs) ? abs : "";
+      })(),
       imageCount: imageCount,
       html: html,
     });
