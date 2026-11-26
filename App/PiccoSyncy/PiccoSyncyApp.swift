@@ -1,8 +1,10 @@
+import AppKit
 import SwiftUI
 
 @main
 struct PiccoSyncyApp: App {
-    @State private var model = AppModel()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @State private var model = AppModel.shared
 
     var body: some Scene {
         MenuBarExtra {
@@ -29,5 +31,13 @@ struct MenuBarLabel: View {
             if waiting > 0 { Text("\(waiting)") }
         }
         .accessibilityLabel(waiting > 0 ? "Picco Syncy, \(waiting) waiting" : "Picco Syncy")
+    }
+}
+
+/// Receives `piccosyncy://inbox` from the Share extension, which launches or wakes the app.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard urls.contains(where: { $0.scheme == "piccosyncy" }) else { return }
+        Task { @MainActor in await AppModel.shared.processInbox() }
     }
 }

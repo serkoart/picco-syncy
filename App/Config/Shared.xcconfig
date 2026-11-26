@@ -2,10 +2,11 @@
 //
 // Contributors: don't edit this file. Create App/Config/Local.xcconfig (git-ignored) with your own
 //   DEVELOPMENT_TEAM = <your team ID>
-//   PRODUCT_BUNDLE_IDENTIFIER = <your.reverse.domain>.PiccoSyncy
-// or set DEVELOPMENT_TEAM to empty there to sign to run locally.
+//   PICCO_BUNDLE_ID = <your.reverse.domain>.PiccoSyncy
+// The App Group the app and its Share extension share is derived from both ($(DEVELOPMENT_TEAM).$(PICCO_BUNDLE_ID)).
 
 DEVELOPMENT_TEAM = 33JXZ6WRS4
-PRODUCT_BUNDLE_IDENTIFIER = com.serkoart.PiccoSyncy
+PICCO_BUNDLE_ID = com.serkoart.PiccoSyncy
+PICCO_APP_GROUP = $(DEVELOPMENT_TEAM).$(PICCO_BUNDLE_ID)
 
 #include? "Local.xcconfig"

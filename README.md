@@ -17,7 +17,7 @@ The Picco doesn't run Android, so the usual BOOX tools (Send2Boox, BOOXDrop) don
 - Swift 6 toolchain (Xcode 16 or later)
 - A BOOX Picco and a USB-C cable
 
-## The menu-bar app
+## The menu-bar app and Share extension
 
 ```bash
 xcodebuild -project App/PiccoSyncy.xcodeproj -scheme PiccoSyncy -derivedDataPath .build/xcode build
@@ -26,7 +26,9 @@ open .build/xcode/Build/Products/Debug/PiccoSyncy.app
 
 A book icon appears in the menu bar, with a count of articles waiting. From its panel you can paste a link to add an article, see what's on the Picco and how far you've read, and sync. When the Picco is connected in USB mode, the app syncs and ejects on its own; both can be turned off in Settings.
 
-To build it yourself, create `App/Config/Local.xcconfig` with your own `DEVELOPMENT_TEAM` and `PRODUCT_BUNDLE_IDENTIFIER`, or set `DEVELOPMENT_TEAM =` (empty) there to sign to run locally.
+The app includes a **Send to Picco** Share extension. In Safari, choose **Share → Send to Picco**: it sends the page as you see it, including articles you're logged in to. Other apps that share a link work too. Copy the app to `/Applications` and open it once so macOS registers the extension, then turn it on under Safari's **Share → Edit Extensions…** if it isn't listed.
+
+To build it yourself, create `App/Config/Local.xcconfig` with your own `DEVELOPMENT_TEAM` and `PICCO_BUNDLE_ID`. The app and extension share an App Group named after both.
 
 ## The command-line tool
 

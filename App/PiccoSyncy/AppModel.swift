@@ -8,6 +8,10 @@ import UserNotifications
 @MainActor
 @Observable
 final class AppModel {
+    /// One model for the whole app, so the app delegate (which receives `piccosyncy://` links from the
+    /// Share extension) and the SwiftUI scenes share it.
+    static let shared = AppModel()
+
     // MARK: State shown in the menu
 
     private(set) var items: [OutboxItem] = []
@@ -29,7 +33,13 @@ final class AppModel {
 
     var autoSync: Bool { didSet { defaults.set(autoSync, forKey: Keys.autoSync) } }
     var autoEject: Bool { didSet { defaults.set(autoEject, forKey: Keys.autoEject) } }
-    var includeImages: Bool { didSet { defaults.set(includeImages, forKey: Keys.includeImages) } }
+    var includeImages: Bool {
+        didSet {
+            defaults.set(includeImages, forKey: Keys.includeImages)
+            // The Share extension reads this as its default.
+            ShareInbox.defaults?.set(includeImages, forKey: ShareInbox.includeImagesKey)
+        }
+    }
 
     private enum Keys {
         static let autoSync = "autoSync"
@@ -44,6 +54,8 @@ final class AppModel {
     @ObservationIgnored private let defaults = UserDefaults.standard
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var outboxWatcher: DispatchSourceFileSystemObject?
+    @ObservationIgnored private var inboxWatcher: DispatchSourceFileSystemObject?
+    @ObservationIgnored private var processingInbox = false
 
     init() {
         defaults.register(defaults: [Keys.autoSync: true, Keys.autoEject: true, Keys.includeImages: true])
@@ -54,8 +66,11 @@ final class AppModel {
 
         refresh()
         device = PiccoDevice.findMounted()
+        ShareInbox.defaults?.set(includeImages, forKey: ShareInbox.includeImagesKey)
         observeVolumes()
         watchOutbox()
+        watchInbox()
+        Task { await processInbox() }
     }
 
     /// Re-reads the outbox from disk. Cheap; called whenever the menu opens.
@@ -212,6 +227,59 @@ final class AppModel {
         source.setCancelHandler { close(fd) }
         source.resume()
         outboxWatcher = source
+    }
+
+    // MARK: - Pages shared from other apps
+
+    /// Converts everything the Share extension has dropped in the inbox, one page at a time.
+    func processInbox() async {
+        guard !processingInbox else { return }
+        processingInbox = true
+        isSending = true
+        defer {
+            processingInbox = false
+            isSending = false
+        }
+        while let (job, html) = ShareInbox.pending().first {
+            ShareInbox.remove(job)
+            let label = job.title ?? URL(string: job.url)?.host() ?? job.url
+            guard let url = URL(string: job.url) else { continue }
+            do {
+                let result: ArticleSender.Result
+                if let html {
+                    result = try await ArticleSender.send(
+                        html: html, baseURL: url, includeImages: job.includeImages, outbox: outbox)
+                } else {
+                    result = try await ArticleSender.send(url: url, includeImages: job.includeImages, outbox: outbox)
+                }
+                refresh()
+                show(message: "Added “\(result.article.title)”")
+                await notify(
+                    title: "Added to Picco Syncy",
+                    body: "“\(result.article.title)” will go to the Picco at the next sync.")
+            } catch {
+                show(error: "Couldn’t add “\(label)”: \(error.localizedDescription)")
+                await notify(title: "Couldn’t add to Picco Syncy", body: "“\(label)”: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func watchInbox() {
+        guard let folder = ShareInbox.folder else { return }
+        let fd = open(folder.path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write], queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(300))
+                    await self?.processInbox()
+                }
+            }
+        }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        inboxWatcher = source
     }
 
     // MARK: - Settings actions
